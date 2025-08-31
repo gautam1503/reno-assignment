@@ -1,195 +1,135 @@
-import { NextResponse } from 'next/server'
-import { MongoClient, ObjectId } from 'mongodb'
-import { writeFile, mkdir } from 'fs/promises'
-import { join } from 'path'
+import { NextResponse } from 'next/server';
+import { MongoClient, ObjectId } from 'mongodb';
 
-// MongoDB configuration
-const MONGODB_URI = process.env.MONGODB_URI
-const MONGODB_DB = process.env.MONGODB_DB || 'school_management'
+const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_DB = process.env.MONGODB_DB || "school_management";
 
-// Initialize MongoDB connection
 async function getConnection() {
   try {
-    if (!MONGODB_URI) {
-      throw new Error('MONGODB_URI environment variable is not set')
-    }
+    console.log('🔌 Attempting MongoDB connection...');
+    console.log('📊 Database:', MONGODB_DB);
+    console.log('🔗 URI:', MONGODB_URI ? 'Connected' : 'Not found');
     
-    console.log('🔄 Connecting to MongoDB Atlas...')
-    console.log('📍 Database:', MONGODB_DB)
-    console.log('🌐 URI:', MONGODB_URI.substring(0, 50) + '...')
+    const client = await MongoClient.connect(MONGODB_URI);
+    console.log('✅ MongoDB connected successfully!');
     
-    const client = new MongoClient(MONGODB_URI)
-    await client.connect()
+    const db = client.db(MONGODB_DB);
+    console.log('📁 Using database:', db.databaseName);
     
-    console.log('✅ Successfully connected to MongoDB Atlas!')
-    console.log('📊 Database:', MONGODB_DB)
-    console.log('🔌 Connection established on MongoDB Atlas cloud')
-    
-    return client
+    return { client, db };
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error)
-    throw new Error('Failed to connect to MongoDB Atlas')
+    console.error('❌ MongoDB connection failed:', error);
+    throw error;
   }
 }
 
-// Create schools collection if it doesn't exist
 async function createCollectionIfNotExists(db) {
   try {
-    const collections = await db.listCollections().toArray()
-    const collectionExists = collections.some(col => col.name === 'schools')
+    console.log('📋 Checking if schools collection exists...');
+    const collections = await db.listCollections({ name: 'schools' }).toArray();
     
-    if (!collectionExists) {
-      await db.createCollection('schools')
-      console.log('📚 Schools collection created successfully')
+    if (collections.length === 0) {
+      console.log('📝 Creating schools collection...');
+      await db.createCollection('schools');
+      console.log('✅ Schools collection created successfully!');
     } else {
-      console.log('📚 Schools collection already exists')
+      console.log('✅ Schools collection already exists');
     }
   } catch (error) {
-    console.error('Error creating collection:', error)
-    throw new Error('Failed to create collection')
+    console.error('❌ Error with collection setup:', error);
+    throw error;
   }
 }
 
-// GET - Fetch all schools
 export async function GET() {
-  let client
+  let client;
   try {
-    console.log('📡 GET /api/schools - Fetching schools from MongoDB Atlas...')
-    client = await getConnection()
-    const db = client.db(MONGODB_DB)
+    console.log('📥 GET request received - fetching schools...');
+    const { client: mongoClient, db } = await getConnection();
+    client = mongoClient;
     
-    await createCollectionIfNotExists(db)
+    await createCollectionIfNotExists(db);
     
-    const schools = await db.collection('schools')
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray()
+    const schools = await db.collection('schools').find({}).sort({ createdAt: -1 }).toArray();
+    console.log(`✅ Successfully fetched ${schools.length} schools`);
     
-    console.log(`✅ Successfully fetched ${schools.length} schools from MongoDB Atlas`)
-    return NextResponse.json(schools)
+    return NextResponse.json(schools);
   } catch (error) {
-    console.error('GET error:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch schools' },
-      { status: 500 }
-    )
+    console.error('❌ Error fetching schools:', error);
+    return NextResponse.json({ error: 'Failed to fetch schools' }, { status: 500 });
   } finally {
     if (client) {
-      await client.close()
-      console.log('🔌 MongoDB connection closed')
+      await client.close();
+      console.log('🔌 MongoDB connection closed');
     }
   }
 }
 
-// POST - Add new school
 export async function POST(request) {
-  let client
+  let client;
   try {
-    console.log('📡 POST /api/schools - Adding new school to MongoDB Atlas...')
-    const formData = await request.formData()
+    console.log('📤 POST request received - adding new school...');
     
-    // Extract form data
-    const name = formData.get('name')
-    const address = formData.get('address')
-    const city = formData.get('city')
-    const state = formData.get('state')
-    const contact = formData.get('contact')
-    const email_id = formData.get('email_id')
-    const imageFile = formData.get('image')
-    
-    // Validate required fields
-    if (!name || !address || !city || !state || !contact || !email_id || !imageFile) {
-      return NextResponse.json(
-        { error: 'All fields are required' },
-        { status: 400 }
-      )
-    }
-    
-    // Validate email format
-    const emailRegex = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i
-    if (!emailRegex.test(email_id)) {
-      return NextResponse.json(
-        { error: 'Invalid email format' },
-        { status: 400 }
-      )
-    }
-    
-    // Validate contact number
-    const contactRegex = /^[0-9]{10,15}$/
-    if (!contactRegex.test(contact)) {
-      return NextResponse.json(
-        { error: 'Invalid contact number format' },
-        { status: 400 }
-      )
-    }
-    
-    // Handle image upload
-    let imageFileName = ''
-    if (imageFile && imageFile.size > 0) {
-      try {
-        // Create schoolImages directory if it doesn't exist
-        const uploadDir = join(process.cwd(), 'public', 'schoolImages')
-        await mkdir(uploadDir, { recursive: true })
-        
-        // Generate unique filename
-        const fileExtension = imageFile.name.split('.').pop()
-        imageFileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExtension}`
-        
-        // Save file
-        const bytes = await imageFile.arrayBuffer()
-        const buffer = Buffer.from(bytes)
-        const filePath = join(uploadDir, imageFileName)
-        await writeFile(filePath, buffer)
-        
-        console.log('📸 Image uploaded successfully:', imageFileName)
-        
-      } catch (error) {
-        console.error('Image upload error:', error)
-        return NextResponse.json(
-          { error: 'Failed to upload image' },
-          { status: 500 }
-        )
-      }
-    }
-    
-    // Save to MongoDB
-    client = await getConnection()
-    const db = client.db(MONGODB_DB)
-    
-    await createCollectionIfNotExists(db)
-    
+    const formData = await request.formData();
     const schoolData = {
-      name,
-      address,
-      city,
-      state,
-      contact,
-      image: imageFileName,
-      email_id,
+      id: formData.get('id'),
+      name: formData.get('name'),
+      address: formData.get('address'),
+      city: formData.get('city'),
+      state: formData.get('state'),
+      contact: formData.get('contact'),
+      email_id: formData.get('email_id'),
       createdAt: new Date()
+    };
+
+    // Handle image as base64
+    const imageFile = formData.get('image');
+    if (imageFile && imageFile.size > 0) {
+      console.log('🖼️ Processing image upload...');
+      
+      // Convert image to base64
+      const bytes = await imageFile.arrayBuffer();
+      const buffer = Buffer.from(bytes);
+      const base64String = `data:${imageFile.type};base64,${buffer.toString('base64')}`;
+      
+      schoolData.image = base64String;
+      console.log('✅ Image converted to base64 successfully');
+    } else {
+      console.log('⚠️ No image provided, skipping image processing');
+      schoolData.image = '';
     }
+
+    console.log('📝 School data prepared:', {
+      id: schoolData.id,
+      name: schoolData.name,
+      city: schoolData.city,
+      hasImage: !!schoolData.image
+    });
+
+    const { client: mongoClient, db } = await getConnection();
+    client = mongoClient;
     
-    console.log('💾 Saving school data to MongoDB Atlas...')
-    const result = await db.collection('schools').insertOne(schoolData)
+    await createCollectionIfNotExists(db);
     
-    console.log('✅ School added successfully to MongoDB Atlas!')
-    console.log('🆔 New school ID:', result.insertedId)
+    const result = await db.collection('schools').insertOne(schoolData);
+    console.log('✅ School added successfully with ID:', result.insertedId);
     
-    return NextResponse.json({
+    return NextResponse.json({ 
+      success: true, 
       message: 'School added successfully',
-      id: result.insertedId
-    })
+      schoolId: result.insertedId 
+    });
     
   } catch (error) {
-    console.error('POST error:', error)
-    return NextResponse.json(
-      { error: 'Failed to add school' },
-      { status: 500 }
-    )
+    console.error('❌ Error adding school:', error);
+    return NextResponse.json({ 
+      error: 'Failed to add school',
+      details: error.message 
+    }, { status: 500 });
   } finally {
     if (client) {
-      await client.close()
-      console.log('🔌 MongoDB connection closed')
+      await client.close();
+      console.log('🔌 MongoDB connection closed');
     }
   }
 }
